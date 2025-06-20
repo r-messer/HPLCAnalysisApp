@@ -274,29 +274,44 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
         end
 
         function integratedPeaks = integratePeaksForEntry(app, x, y_corrected, ilocs)
-            % Returns a struct array of integrated peak info
-            % x: time values
-            % y_corrected: corrected intensity
-            % b: baseline
-            % ilocs: indices of peaks (from findpeaks)
-        
-            thresholdFraction = 0.05;  % 5% above baseline
+            % Returns a struct array of integrated peak info with valley-limited bounds
+            
+            thresholdFraction = 0.05;  % 5% of peak height
+            n = numel(ilocs);
             integratedPeaks = struct('xmin', {}, 'xmax', {}, 'area', {}, 'index_range', {});
-        
-            for k = 1:numel(ilocs)
+            
+            for k = 1:n
                 pkLoc = ilocs(k);
                 yPeak = y_corrected(pkLoc);
-                threshold = thresholdFraction * (yPeak);
+                threshold = thresholdFraction * yPeak;
         
-                % Walk left to find xmin
+                % Determine left bound (valley)
+                if k == 1
+                    leftIdx = 1;
+                else
+                    searchRange = y_corrected(ilocs(k-1):pkLoc);
+                    [~, minRel] = min(searchRange);
+                    leftIdx = ilocs(k-1) + minRel - 1;
+                end
+        
+                % Determine right bound (valley)
+                if k == n
+                    rightIdx = numel(y_corrected);
+                else
+                    searchRange = y_corrected(pkLoc:ilocs(k+1));
+                    [~, minRel] = min(searchRange);
+                    rightIdx = pkLoc + minRel - 1;
+                end
+        
+                % Walk left while above threshold and within valley
                 xmin = pkLoc;
-                while xmin > 1 && y_corrected(xmin) > threshold
+                while xmin > 1 && y_corrected(xmin) > threshold && xmin > leftIdx
                     xmin = xmin - 1;
                 end
         
-                % Walk right to find xmax
+                % Walk right while above threshold and within valley
                 xmax = pkLoc;
-                while xmax < numel(y_corrected) && y_corrected(xmax) > threshold
+                while xmax < numel(y_corrected) && y_corrected(xmax) > threshold && xmax < rightIdx
                     xmax = xmax + 1;
                 end
         
@@ -304,22 +319,27 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
                 xmin = max(xmin, 1);
                 xmax = min(xmax, numel(y_corrected));
         
-                % Compute net area (signal - baseline)
-                net_area = trapz(x(xmin:xmax), y_corrected(xmin:xmax));
+                % Compute net area (baseline corrected)
+                area = trapz(x(xmin:xmax), y_corrected(xmin:xmax));
         
-                % Store result
                 integratedPeaks(k).xmin = x(xmin);
                 integratedPeaks(k).xmax = x(xmax);
-                integratedPeaks(k).area = net_area;
+                integratedPeaks(k).area = area;
                 integratedPeaks(k).index_range = [xmin xmax];
             end
         end
+
 
 
         function plotChromatograms(app, dataType, showPeaks, showIntegration, applyOffset)
 
             % Clear and hold
             cla(app.ChromatogramAxis);
+
+            if isempty(app.Data)
+                return
+            end
+
             hold(app.ChromatogramAxis, 'on');
         
             % Get selected files
@@ -409,7 +429,8 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             xlim(app.ChromatogramAxis, 'tight');
             ylim(app.ChromatogramAxis, 'padded');
             title(app.ChromatogramAxis, 'Chromatogram');
-            legend(app.ChromatogramAxis, legends, 'Interpreter', 'none', ...
+            legend(app.ChromatogramAxis, legends,...
+                'AutoUpdate', 'off', 'Interpreter', 'none', ...
                 'Box', 'off', 'FontSize', 10);
             hold(app.ChromatogramAxis, 'off');
         end
@@ -485,7 +506,7 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
 
         function onOffsetOverlayToggled(app)
             if strcmp(app.OffsetOverlayCheckBox.Enable, 'on')
-                onPlotRaw(app);
+                onRefreshChromatogram(app);
             end
         end
 
