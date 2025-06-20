@@ -280,7 +280,7 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             % b: baseline
             % ilocs: indices of peaks (from findpeaks)
         
-            thresholdFraction = 0.01;  % 1% above baseline
+            thresholdFraction = 0.05;  % 5% above baseline
             integratedPeaks = struct('xmin', {}, 'xmax', {}, 'area', {}, 'index_range', {});
         
             for k = 1:numel(ilocs)
