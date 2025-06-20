@@ -10,17 +10,24 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
         CloseMenu          matlab.ui.container.Menu
         menuProcess        matlab.ui.container.Menu
         PreprocessAllMenu  matlab.ui.container.Menu
+        menuGroups         matlab.ui.container.Menu
+        MakeGroup          matlab.ui.container.Menu
         CurvesPanel        matlab.ui.container.Panel
-        IntegratedCurveAxis   matlab.ui.control.UIAxes
+        CurvesLayout
+        GroupsGrid
+
         ChromatogramPanel  matlab.ui.container.Panel
         RightButton        matlab.ui.control.Button
         LeftButton         matlab.ui.control.Button
         ChromatogramAxis   matlab.ui.control.UIAxes
         GroupsPanel        matlab.ui.container.Panel
+        GroupListBox       matlab.ui.control.ListBox
         ImportPanel        matlab.ui.container.Panel
         ChromatogramOptions matlab.ui.container.Panel
         CurveOptions       matlab.ui.container.Panel
-        ImportListBox
+        IntegratedPeaksTable
+        IntegratedCurveAxis
+        ImportListBox      matlab.ui.control.ListBox
         PlotRawButton      
         PlotCorrectedButton 
         ShowPeaksCheckBox  
@@ -73,6 +80,15 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             app.menuProcess = uimenu(app.UIFigure);
             app.menuProcess.Text = 'Process';
 
+            % Create menuGroups
+            app.menuGroups = uimenu(app.UIFigure);
+            app.menuGroups.Text = 'Groups';
+
+            % Create MakeGroup
+            app.MakeGroup = uimenu(app.menuGroups);
+            app.MakeGroup.Text = 'Create Group';
+            app.MakeGroup.MenuSelectedFcn = @(src, event) onCreateGroup(app);
+
             % Create PreprocessAllMenu
             app.PreprocessAllMenu = uimenu(app.menuProcess);
             app.PreprocessAllMenu.Text = 'Preprocess All';
@@ -99,6 +115,18 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             app.GroupsPanel.Title = 'Groups';
             app.GroupsPanel.Position = [1 1 360 346];
 
+            % Add a ImportGrid grid layout inside ImportPanel
+            app.GroupsGrid = uigridlayout(app.GroupsPanel);
+            app.GroupsGrid.RowHeight = {'1x'};
+            app.GroupsGrid.ColumnWidth = {'1x'};
+
+            % Inside createComponents(app), after creating GroupsPanel
+            app.GroupListBox = uilistbox(app.GroupsGrid);
+            app.GroupListBox.Multiselect = 'off';
+            app.GroupListBox.Items = {};  % Empty initially
+            app.GroupListBox.FontSize = 12;
+            app.GroupListBox.Tag = 'GroupListBox';
+
             % Create ChromatogramPanel
             app.ChromatogramPanel = uipanel(app.UIFigure);
             app.ChromatogramPanel.Title = 'Chromatogram';
@@ -106,9 +134,9 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
         
             % Create ChromatogramAxis
             app.ChromatogramAxis = uiaxes(app.ChromatogramPanel);
-            title(app.ChromatogramAxis, 'Title')
-            xlabel(app.ChromatogramAxis, 'X')
-            ylabel(app.ChromatogramAxis, 'Y')
+            title(app.ChromatogramAxis, 'Chromatogram');
+            xlabel(app.ChromatogramAxis, 'Time (min)', 'FontSize', 12);
+            ylabel(app.ChromatogramAxis, 'A_{260} (mAU)', 'FontSize', 12);
             app.ChromatogramAxis.Position = [20 40 820 440];
 
             % Create LeftButton
@@ -130,12 +158,24 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             app.CurvesPanel.Title = 'Integrated Curves';
             app.CurvesPanel.Position = [360 1 882 346];
 
-            % Create IntegrateCurveAxis
-            app.IntegratedCurveAxis = uiaxes(app.CurvesPanel);
-            title(app.IntegratedCurveAxis, 'Title')
-            xlabel(app.IntegratedCurveAxis, 'X')
-            ylabel(app.IntegratedCurveAxis, 'Y')
-            app.IntegratedCurveAxis.Position = [20 20 440 300];
+            % Create layout in CurvesPanel
+            CurvesLayout = uigridlayout(app.CurvesPanel, [1, 2]);
+            CurvesLayout.ColumnWidth = {'2x', '3x'};  % Adjust as needed
+            CurvesLayout.RowHeight = {'1x'};
+
+            app.IntegratedPeaksTable = uitable(CurvesLayout);
+            app.IntegratedPeaksTable.Layout.Row = 1;
+            app.IntegratedPeaksTable.Layout.Column = 1;
+            app.IntegratedPeaksTable.ColumnName = {'Reaction Name',...
+                'Area', 'X Variable'};
+            app.IntegratedPeaksTable.ColumnEditable = [false false true];
+
+            app.IntegratedCurveAxis = uiaxes(CurvesLayout);
+            app.IntegratedCurveAxis.Layout.Row = 1;
+            app.IntegratedCurveAxis.Layout.Column = 2;
+            title(app.IntegratedCurveAxis, 'Integrated Curves');
+            xlabel(app.IntegratedCurveAxis, 'Time (min)');
+            ylabel(app.IntegratedCurveAxis, 'AUC');
 
             % Create ChromatogramOptions Panel
             app.ChromatogramOptions = uipanel(app.UIFigure);
@@ -168,6 +208,7 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             app.ClearPlotButton.Text = 'Clear Plot';
             app.ClearPlotButton.Layout.Row = 2;
             app.ClearPlotButton.Layout.Column = 1;
+            app.ClearPlotButton.ButtonPushedFcn = @(src, event) onClearPlot(app);
 
             checkboxRow = uigridlayout(chromPlotLayout, [3, 1]);
             checkboxRow.Layout.Row = 2;
@@ -276,7 +317,7 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
         function integratedPeaks = integratePeaksForEntry(app, x, y_corrected, ilocs)
             % Returns a struct array of integrated peak info with valley-limited bounds
             
-            thresholdFraction = 0.05;  % 5% of peak height
+            thresholdFraction = 0.02;  % 2% of peak height
             n = numel(ilocs);
             integratedPeaks = struct('xmin', {}, 'xmax', {}, 'area', {}, 'index_range', {});
             
@@ -329,12 +370,76 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             end
         end
 
+        function onCreateGroup(app)
+            % Create new UI figure for group creation
+            groupFig = uifigure('Name', 'Create Group', ...
+                'Position', [500 500 300 180]);
+        
+            % Create grid layout (4 rows x 1 column)
+            grid = uigridlayout(groupFig, [4, 1]);
+            grid.RowHeight = {'fit', 'fit', 'fit', 'fit'};
+            grid.ColumnWidth = {'1x'};
+            grid.Padding = [10 10 10 10];
+            grid.RowSpacing = 10;
+        
+            % Row 1: Label
+            label = uilabel(grid);
+            label.Text = 'Group Label:';
+            label.FontWeight = 'bold';
+        
+            % Row 2: Edit Field
+            groupEditField = uieditfield(grid, 'text');
+            groupEditField.Placeholder = 'Enter group name';
+        
+            % Row 3: OK Button
+            okButton = uibutton(grid, 'push');
+            okButton.Text = 'OK';
+            okButton.ButtonPushedFcn = @(src, event) onGroupOK(app, groupFig, groupEditField);
+        
+            % Row 4: Cancel Button
+            cancelButton = uibutton(grid, 'push');
+            cancelButton.Text = 'Cancel';
+            cancelButton.ButtonPushedFcn = @(src, event) close(groupFig);
+        end
+
+        function onGroupOK(app, fig, groupEditField)
+            groupName = strtrim(groupEditField.Value);
+            if isempty(groupName)
+                uialert(fig, 'Group name cannot be empty.', 'Input Error');
+                return;
+            end
+        
+            selectedFiles = app.ImportListBox.Value;
+            if ischar(selectedFiles)
+                selectedFiles = {selectedFiles};
+            end
+        
+            % Assign group name to matching entries
+            for i = 1:numel(app.Data)
+                if any(strcmp(app.Data(i).filename, selectedFiles))
+                    app.Data(i).group = groupName;
+                end
+            end
+        
+            % Add to GroupListBox if not already present
+            existingGroups = app.GroupListBox.Items;
+            if ~any(strcmp(existingGroups, groupName))
+                app.GroupListBox.Items{end+1} = groupName;
+            end
+        
+            % Close the group creation window
+            delete(fig);
+        end
+
+
 
 
         function plotChromatograms(app, dataType, showPeaks, showIntegration, applyOffset)
 
             % Clear and hold
+            disp("Before CLA:"); disp(get(app.ChromatogramAxis, 'Children'))
             cla(app.ChromatogramAxis);
+            disp("After CLA:"); disp(get(app.ChromatogramAxis, 'Children'))
 
             if isempty(app.Data)
                 return
@@ -358,9 +463,12 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
                     allY = [allY; d(:,2)];
                 end
             end
+
             [xOffset, yOffset] = getOverlayOffsetMagnitude(app, allX, allY);
         
-            legends = {};
+            lineHandles = gobjects(0);  % Preallocate empty handle array
+            legendLabels = {};
+
             for i = 1:numel(selectedFiles)
                 match = strcmp({app.Data.filename}, selectedFiles{i});
                 if ~any(match), continue; end
@@ -389,8 +497,10 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
                 end
         
                 % Plot signal
-                plot(app.ChromatogramAxis, x, signal, 'Color', color, 'LineWidth', 1.5);
-        
+                hLine = plot(app.ChromatogramAxis, x, signal, 'Color', color, 'LineWidth', 1.5);
+                lineHandles(end+1) = hLine;
+                legendLabels{end+1} = selectedFiles{i}; % Label matches the line
+
                 % Plot peaks
                 if showPeaks && isfield(entry, 'peaks') && ~isempty(entry.peaks)
                     px = entry.peaks.locs;
@@ -408,19 +518,17 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
                 if showIntegration && isfield(entry, 'integratedPeaks')
                     for j = 1:numel(entry.integratedPeaks)
                         int = entry.integratedPeaks(j);
-                        xPatch = [int.xmin, int.xmax, int.xmax, int.xmin];
-                        yBase = [0, 0, int.area, int.area];  % simplified
-                        if applyOffset
-                            xPatch = xPatch + (i-1)*xOffset;
-                            yBase = yBase + (i-1)*yOffset;
-                        end
+                        xPatch = [x(int.index_range(1):int.index_range(2))];
+                        yBase = signal(int.index_range(1):int.index_range(2)); 
+                        % if applyOffset
+                        %     xPatch = xPatch + (i-1)*xOffset;
+                        %     yBase = yBase + (i-1)*yOffset;
+                        % end
                         fill(app.ChromatogramAxis, xPatch, yBase, color, ...
                             'FaceAlpha', 0.15, 'EdgeColor', 'none', ...
-                            'HandleVisibility', 'off');
+                            'Parent',app.ChromatogramAxis);
                     end
                 end
-        
-                legends{end+1} = selectedFiles{i};
             end
         
             % Finalize axes
@@ -429,9 +537,8 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             xlim(app.ChromatogramAxis, 'tight');
             ylim(app.ChromatogramAxis, 'padded');
             title(app.ChromatogramAxis, 'Chromatogram');
-            legend(app.ChromatogramAxis, legends,...
-                'AutoUpdate', 'off', 'Interpreter', 'none', ...
-                'Box', 'off', 'FontSize', 10);
+            legend(app.ChromatogramAxis, lineHandles, legendLabels, ...
+                'Interpreter', 'none', 'Box', 'off', 'FontSize', 10);
             hold(app.ChromatogramAxis, 'off');
         end
 
@@ -473,7 +580,6 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
                 app.OffsetOverlayCheckBox.Value);
         end
 
-
         function onImportListBoxChanged(app)
             selected = app.ImportListBox.Value;
         
@@ -490,6 +596,13 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
                 app.OffsetOverlayCheckBox.Value = false;
                 app.OffsetOverlayCheckBox.Enable = 'off';
             end
+        end
+
+        function onClearPlot(app)
+            cla(app.ChromatogramAxis, 'reset');  % Clears all graphics and resets axes properties
+            title(app.ChromatogramAxis, 'Chromatogram');
+            xlabel(app.ChromatogramAxis, 'Time (min)', 'FontSize', 12);
+            ylabel(app.ChromatogramAxis, 'A_{260} (mAU)', 'FontSize', 12);
         end
 
         function [xOffset, yOffset] = getOverlayOffsetMagnitude(app, allX, allY)
@@ -521,7 +634,6 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
                 'MarkerSize', 6, 'MarkerFaceColor', color, ...
                 'MarkerEdgeColor', color, 'LineStyle', 'none')
         end
-
     end
 
     % App creation and deletion
