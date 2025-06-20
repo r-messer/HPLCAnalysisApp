@@ -13,7 +13,6 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
         menuGroups         matlab.ui.container.Menu
         MakeGroup          matlab.ui.container.Menu
         CurvesPanel        matlab.ui.container.Panel
-        CurvesLayout
         GroupsGrid
 
         ChromatogramPanel  matlab.ui.container.Panel
@@ -25,8 +24,14 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
         ImportPanel        matlab.ui.container.Panel
         ChromatogramOptions matlab.ui.container.Panel
         CurveOptions       matlab.ui.container.Panel
-        
+        PlotCurveButton    matlab.ui.control.Button
+        ClearCurvePlotButton  matlab.ui.control.Button
         PeakDropdown
+        FitLinearCurveButton matlab.ui.control.Button
+        FitNonLinearCurveButton matlab.ui.control.Button
+        ExportTableButton   matlab.ui.control.Button
+        ExportIntegratedCurvesButton  matlab.ui.control.Button
+
         IntegratedPeaksTable
         IntegratedCurveAxis
         ImportListBox      matlab.ui.control.ListBox
@@ -169,7 +174,7 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             app.IntegratedPeaksTable = uitable(CurvesLayout);
             app.IntegratedPeaksTable.Layout.Row = 1;
             app.IntegratedPeaksTable.Layout.Column = 1;
-            app.IntegratedPeaksTable.ColumnName = {'Reaction Name',...
+            app.IntegratedPeaksTable.ColumnName = {'Name',...
                 'Ret. Time', 'Area', 'X Variable'};
             app.IntegratedPeaksTable.ColumnWidth = {'fit'};
             app.IntegratedPeaksTable.Data = {};
@@ -242,17 +247,70 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             app.CurveOptions.Title = "Curve Options";
             app.CurveOptions.Position = [1242 1 198 346];
 
-            % Create layout for CurveOptions panel
-            curveOptionsLayout = uigridlayout(app.CurveOptions);
-            curveOptionsLayout.RowHeight = {'1x'};
+            %Create curveOptionsLayout for CurveOptions Panel
+            curveOptionsLayout = uigridlayout(app.CurveOptions, [4, 1]);
+            curveOptionsLayout.RowHeight = {'fit', 'fit', 'fit', 'fit'};
             curveOptionsLayout.ColumnWidth = {'1x'};
-            
+
             % Create disabled dropdown for selecting peaks
             app.PeakDropdown = uidropdown(curveOptionsLayout);
+            app.PeakDropdown.Layout.Row = 1;
+            app.PeakDropdown.Layout.Column = 1;
             app.PeakDropdown.Items = {}; % Will be populated dynamically later
             app.PeakDropdown.Placeholder = 'Peaks';
             app.PeakDropdown.Enable = 'off';
             app.PeakDropdown.ValueChangedFcn = @(src, event) onPeakDropdownChanged(app);
+
+            % Create CurvePlotOptionsLayout for curveOptionsLayout panel
+            CurvePlotOptionsLayout = uigridlayout(curveOptionsLayout, [1, 2]);
+            CurvePlotOptionsLayout.Layout.Row = 2;
+            CurvePlotOptionsLayout.Layout.Column = 1;
+            CurvePlotOptionsLayout.RowHeight = {'fit'};
+            CurvePlotOptionsLayout.ColumnWidth = {'1x', '1x'};
+
+            app.PlotCurveButton = uibutton(CurvePlotOptionsLayout, 'push');
+            app.PlotCurveButton.Layout.Row = 1;
+            app.PlotCurveButton.Layout.Column = 1;
+            app.PlotCurveButton.Text = 'Plot Curve';
+
+            app.ClearCurvePlotButton = uibutton(CurvePlotOptionsLayout, 'push');
+            app.ClearCurvePlotButton.Layout.Row = 1;
+            app.ClearCurvePlotButton.Layout.Column = 2;
+            app.ClearCurvePlotButton.Text = 'Clear Curve';
+
+            % Create Fit Curve Buttons rows
+            FitCurveButtonRow = uigridlayout(curveOptionsLayout,[1, 2]);
+            FitCurveButtonRow.Layout.Row = 3;
+            FitCurveButtonRow.Layout.Column = 1;
+            FitCurveButtonRow.RowHeight = {'fit'};
+            FitCurveButtonRow.ColumnWidth = {'1x','1x'};
+
+            app.FitLinearCurveButton = uibutton(FitCurveButtonRow, 'push');
+            app.FitLinearCurveButton.Layout.Row = 1;
+            app.FitLinearCurveButton.Layout.Column = 1;
+            app.FitLinearCurveButton.Text = 'Fit Linear';
+
+            app.FitNonLinearCurveButton = uibutton(FitCurveButtonRow, 'push');
+            app.FitNonLinearCurveButton.Layout.Row = 1;
+            app.FitNonLinearCurveButton.Layout.Column = 2;
+            app.FitNonLinearCurveButton.Text = 'Fit Nonlinear';
+
+            % Create ExportButtonRow
+            ExportButtonRow = uigridlayout(curveOptionsLayout, [1,2]);
+            ExportButtonRow.Layout.Row = 4;
+            ExportButtonRow.Layout.Column = 1;
+            ExportButtonRow.RowHeight = {'fit'};
+            ExportButtonRow.ColumnWidth = {'1x', '1x'};
+
+            app.ExportTableButton = uibutton(ExportButtonRow, 'push');
+            app.ExportTableButton.Layout.Row = 1;
+            app.ExportTableButton.Layout.Column = 1;
+            app.ExportTableButton.Text = 'Export Table';
+
+            app.ExportIntegratedCurvesButton = uibutton(ExportButtonRow, 'push');
+            app.ExportIntegratedCurvesButton.Layout.Row = 1;
+            app.ExportIntegratedCurvesButton.Layout.Column = 2;
+            app.ExportIntegratedCurvesButton.Text = 'Export Curves';
 
             % Show the figure after all components are created
             app.UIFigure.Visible = 'on';
@@ -567,9 +625,9 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
         function plotChromatograms(app, dataType, showPeaks, showIntegration, applyOffset)
 
             % Clear and hold
-            disp("Before CLA:"); disp(get(app.ChromatogramAxis, 'Children'))
+            % disp("Before CLA:"); disp(get(app.ChromatogramAxis, 'Children'))
             cla(app.ChromatogramAxis);
-            disp("After CLA:"); disp(get(app.ChromatogramAxis, 'Children'))
+            % disp("After CLA:"); disp(get(app.ChromatogramAxis, 'Children'))
 
             if isempty(app.Data)
                 return
@@ -655,7 +713,7 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
                         %     yBase = yBase + (i-1)*yOffset;
                         % end
                         fill(app.ChromatogramAxis, xPatch, yBase, color, ...
-                            'FaceAlpha', 0.15, 'EdgeColor', 'none', ...
+                            'FaceAlpha', 0.25, 'EdgeColor', 'none', ...
                             'Parent',app.ChromatogramAxis);
                     end
                 end
@@ -730,6 +788,9 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
 
         function onClearPlot(app)
             cla(app.ChromatogramAxis, 'reset');  % Clears all graphics and resets axes properties
+            app.ShowPeaksCheckBox.Value = false;
+            app.ShowIntegrationCheckBox.Value = false;
+            app.OffsetOverlayCheckBox.Value = false;
             title(app.ChromatogramAxis, 'Chromatogram');
             xlabel(app.ChromatogramAxis, 'Time (min)', 'FontSize', 12);
             ylabel(app.ChromatogramAxis, 'A_{260} (mAU)', 'FontSize', 12);
