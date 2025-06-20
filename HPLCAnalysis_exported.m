@@ -22,18 +22,19 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
         CurveOptions       matlab.ui.container.Panel
         ImportListBox
         PlotRawButton      
-        PlotBaselineButton 
+        PlotCorrectedButton 
         ShowPeaksCheckBox  
         ShowIntegrationCheckBox 
         OffsetOverlayCheckBox
         ClearPlotButton
-        Data;% Struct aray holding data
+        Data% Struct aray holding data
     end
 
     properties (Access = private)
         ImportGrid; % Layout container for file list
         CustomColors; 
         RawFiles;
+        CurrentPlotType = 'raw'; % Default plot type
     end
 
     % Component initialization
@@ -157,10 +158,11 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             app.PlotRawButton.Layout.Column = 1;
             app.PlotRawButton.ButtonPushedFcn = @(src, event) onPlotRaw(app);
 
-            app.PlotBaselineButton = uibutton(buttonRow, 'push');
-            app.PlotBaselineButton.Text = 'Plot Corrected';
-            app.PlotBaselineButton.Layout.Row = 1;
-            app.PlotBaselineButton.Layout.Column = 2;
+            app.PlotCorrectedButton = uibutton(buttonRow, 'push');
+            app.PlotCorrectedButton.Text = 'Plot Corrected';
+            app.PlotCorrectedButton.Layout.Row = 1;
+            app.PlotCorrectedButton.Layout.Column = 2;
+            app.PlotCorrectedButton.ButtonPushedFcn = @(src, event) onPlotCorrected(app);
 
             app.ClearPlotButton = uibutton(buttonRow, 'push');
             app.ClearPlotButton.Text = 'Clear Plot';
@@ -174,11 +176,12 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             app.ShowPeaksCheckBox = uicheckbox(checkboxRow);
             app.ShowPeaksCheckBox.Text = 'Show Peaks';
             app.ShowPeaksCheckBox.Layout.Row = 1;
-            app.ShowPeaksCheckBox.ValueChangedFcn = @(src, event) onPlotRaw(app);
+            app.ShowPeaksCheckBox.ValueChangedFcn = @(src, event) onRefreshChromatogram(app);
 
             app.ShowIntegrationCheckBox = uicheckbox(checkboxRow);
             app.ShowIntegrationCheckBox.Text = 'Show Integration';
             app.ShowIntegrationCheckBox.Layout.Row = 2;
+            app.ShowIntegrationCheckBox.ValueChangedFcn = @(src, event) onRefreshChromatogram(app);
 
             app.OffsetOverlayCheckBox = uicheckbox(checkboxRow);
             app.OffsetOverlayCheckBox.Text = 'Offset Overlays';
@@ -230,23 +233,27 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             
                 % Calculate baseline using backcor (Mazet et al., 2004)
                 baseline = backcor(x,y, order, thresh, 'atq');
+                y_corrected = y - baseline;
 
                 % Adaptive threshold
-                prom_threshold = 0.002 * max(y);
-                min_threshold = -1;
+                prom_threshold = 0.002 * max(y_corrected);
+                min_threshold = 0.5;
             
                 % Find peaks
-                [pks, locs, w, prom] = findpeaks(y, x, ...
+                [pks, locs, w, prom] = findpeaks(y_corrected, x, ...
                     'MinPeakProminence', prom_threshold, ...
                     'MinPeakHeight', min_threshold);
             
                 
-
+                [~, ilocs, ~, ~] = findpeaks(y_corrected, ...
+                    'MinPeakProminence', prom_threshold, ...
+                    'MinPeakHeight', min_threshold);
 
                 % Build peak substructure
                 peakStruct = struct( ...
                     'pks', pks, ...
                     'locs', locs, ...
+                    'locs_ind', ilocs, ...
                     'widths', w, ...
                     'prominences', prom, ...
                     'threshold', prom_threshold ...
@@ -259,76 +266,70 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
                 app.Data(i).group = '';
                 app.Data(i).Baseline = baseline;
                 app.Data(i).peaks = peakStruct;
+                app.Data(i).integratedPeaks = integratePeaksForEntry(app, x, y_corrected, ilocs);
             end
 
-            % Index based integration of peaks
-            for i = 1:numel(app.Data)
-                x = app.Data(i).RawData(:,1);
-                y = app.Data(i).RawData(:,2);
-                b = app.Data(i).Baseline;
-            
-                % Peak data (recalculate to get index-based locs)
-                [~, locs_idx, w, ~] = findpeaks(y, ...
-                    'MinPeakProminence', app.Data(i).peaks.threshold);
-            
-                % Initialize table or struct to store integration results
-                integratedPeaks = struct('xmin', {}, 'xmax', {}, ...
-                                         'area', {});
-            
-                for j = 1:length(locs_idx)
-                    sigma_idx = round(w(j)/2, 'TieBreaker', 'even');
-                    idx_min = max(locs_idx(j) - sigma_idx, 1);
-                    idx_max = min(locs_idx(j) + sigma_idx, numel(x));
-                
-                    % Extract ranges
-                    x_range = x(idx_min:idx_max);
-                    y_range = y(idx_min:idx_max);
-                    b_range = b(idx_min:idx_max);
-                
-                    % Subtract baseline and integrate
-                    corrected = y_range - b_range;
-                    net_area = trapz(x_range, corrected);
-                
-                    % Store result
-                    integratedPeaks(j).xmin = x(idx_min);
-                    integratedPeaks(j).xmax = x(idx_max);
-                    integratedPeaks(j).area = net_area;
-                end
-
-            
-                app.Data(i).integratedPeaks = integratedPeaks;
-            end
-
-            
             % Update list box with filenames
             app.ImportListBox.Items = files;
         end
 
-        function onPlotRaw(app)
-
-            app.PlotRawButton.BackgroundColor = '#baf1ff';
-
-            % Get selected filenames from listbox
-            selectedFiles = app.ImportListBox.Value;
-            if isempty(selectedFiles)
-                return; % Nothing selected
-            end
-
-            if ischar(selectedFiles)
-                selectedFiles = {selectedFiles};  % Normalize single selection
-            end
+        function integratedPeaks = integratePeaksForEntry(app, x, y_corrected, ilocs)
+            % Returns a struct array of integrated peak info
+            % x: time values
+            % y_corrected: corrected intensity
+            % b: baseline
+            % ilocs: indices of peaks (from findpeaks)
         
+            thresholdFraction = 0.01;  % 1% above baseline
+            integratedPeaks = struct('xmin', {}, 'xmax', {}, 'area', {}, 'index_range', {});
+        
+            for k = 1:numel(ilocs)
+                pkLoc = ilocs(k);
+                yPeak = y_corrected(pkLoc);
+                threshold = thresholdFraction * (yPeak);
+        
+                % Walk left to find xmin
+                xmin = pkLoc;
+                while xmin > 1 && y_corrected(xmin) > threshold
+                    xmin = xmin - 1;
+                end
+        
+                % Walk right to find xmax
+                xmax = pkLoc;
+                while xmax < numel(y_corrected) && y_corrected(xmax) > threshold
+                    xmax = xmax + 1;
+                end
+        
+                % Clamp indices
+                xmin = max(xmin, 1);
+                xmax = min(xmax, numel(y_corrected));
+        
+                % Compute net area (signal - baseline)
+                net_area = trapz(x(xmin:xmax), y_corrected(xmin:xmax));
+        
+                % Store result
+                integratedPeaks(k).xmin = x(xmin);
+                integratedPeaks(k).xmax = x(xmax);
+                integratedPeaks(k).area = net_area;
+                integratedPeaks(k).index_range = [xmin xmax];
+            end
+        end
+
+
+        function plotChromatograms(app, dataType, showPeaks, showIntegration, applyOffset)
+
+            % Clear and hold
+            cla(app.ChromatogramAxis);
+            hold(app.ChromatogramAxis, 'on');
+        
+            % Get selected files
+            selectedFiles = app.ImportListBox.Value;
             if ischar(selectedFiles)
                 selectedFiles = {selectedFiles};
             end
-            
-            hold(app.ChromatogramAxis, 'on');
-            cla(app.ChromatogramAxis);
-            
-            allX = [];
-            allY = [];
-
-            % Prepass to get axis extents
+        
+            % Prepass to get axis maxes
+            allX = []; allY = [];
             for i = 1:numel(selectedFiles)
                 match = strcmp({app.Data.filename}, selectedFiles{i});
                 if any(match)
@@ -337,54 +338,120 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
                     allY = [allY; d(:,2)];
                 end
             end
-            
             [xOffset, yOffset] = getOverlayOffsetMagnitude(app, allX, allY);
-            isOffset = app.OffsetOverlayCheckBox.Value;
-            
+        
             legends = {};
-            
             for i = 1:numel(selectedFiles)
                 match = strcmp({app.Data.filename}, selectedFiles{i});
                 if ~any(match), continue; end
-            
-                d = app.Data(match).RawData;
-                peakStruct = app.Data(match).peaks;
-            
-                if isOffset
-                    [x, y] = applyOverlayOffset(app, d, i, xOffset, yOffset);
-                    % Apply same offset to peak locations
-                    peakStruct.locs = peakStruct.locs + (i-1) * xOffset;
-                    peakStruct.pks = peakStruct.pks + (i-1) * yOffset;
-                else
-                    x = d(:,1);
-                    y = d(:,2);
-                end
-            
+        
+                entry = app.Data(match);
+                x = entry.RawData(:,1);
+                y = entry.RawData(:,2);
                 colorIdx = mod(i-1, size(app.CustomColors,1)) + 1;
-                thisColor = app.CustomColors(colorIdx,:);
-            
-                % Plot trace
-                plot(app.ChromatogramAxis, x, y, ...
-                    'Color', thisColor, 'LineWidth', 1.5);
-            
-                % Plot peaks if enabled
-                if app.ShowPeaksCheckBox.Value
-                    plotPeaks(app, x, y, peakStruct, thisColor);
+                color = app.CustomColors(colorIdx,:);
+        
+                % Apply baseline correction
+                switch dataType
+                    case 'raw'
+                        signal = y;
+                    case 'corrected'
+                        signal = y - entry.Baseline;
+                    otherwise
+                        warning("Unknown data type: %s", dataType);
+                        continue;
                 end
-            
+        
+                % Apply offset
+                if applyOffset
+                    x = x + (i-1)*xOffset;
+                    signal = signal + (i-1)*yOffset;
+                end
+        
+                % Plot signal
+                plot(app.ChromatogramAxis, x, signal, 'Color', color, 'LineWidth', 1.5);
+        
+                % Plot peaks
+                if showPeaks && isfield(entry, 'peaks') && ~isempty(entry.peaks)
+                    px = entry.peaks.locs;
+                    py = entry.peaks.pks;
+                    if applyOffset
+                        px = px + (i-1)*xOffset;
+                        py = py + (i-1)*yOffset;
+                    end
+                    plot(app.ChromatogramAxis, px, py, 'v', ...
+                        'Color', color, 'MarkerFaceColor', color, ...
+                        'MarkerSize', 6, 'LineStyle', 'none');
+                end
+        
+                % Plot integration regions
+                if showIntegration && isfield(entry, 'integratedPeaks')
+                    for j = 1:numel(entry.integratedPeaks)
+                        int = entry.integratedPeaks(j);
+                        xPatch = [int.xmin, int.xmax, int.xmax, int.xmin];
+                        yBase = [0, 0, int.area, int.area];  % simplified
+                        if applyOffset
+                            xPatch = xPatch + (i-1)*xOffset;
+                            yBase = yBase + (i-1)*yOffset;
+                        end
+                        fill(app.ChromatogramAxis, xPatch, yBase, color, ...
+                            'FaceAlpha', 0.15, 'EdgeColor', 'none', ...
+                            'HandleVisibility', 'off');
+                    end
+                end
+        
                 legends{end+1} = selectedFiles{i};
             end
-
-            
+        
+            % Finalize axes
             xlabel(app.ChromatogramAxis, 'Time (min)', 'FontSize', 12);
             ylabel(app.ChromatogramAxis, 'A_{260} (mAU)', 'FontSize', 12);
             xlim(app.ChromatogramAxis, 'tight');
             ylim(app.ChromatogramAxis, 'padded');
-            title(app.ChromatogramAxis, 'Raw Chromatograms');
+            title(app.ChromatogramAxis, 'Chromatogram');
             legend(app.ChromatogramAxis, legends, 'Interpreter', 'none', ...
-                'Box','off', 'FontSize', 10);
+                'Box', 'off', 'FontSize', 10);
             hold(app.ChromatogramAxis, 'off');
         end
+
+        function onPlotRaw(app)
+            app.PlotRawButton.BackgroundColor = '#baf1ff';
+            drawnow;
+            pause(0.3);
+            app.PlotRawButton.BackgroundColor = [0.94 0.94 0.94];
+
+            plotChromatograms(app, ...
+                'raw', ...
+                app.ShowPeaksCheckBox.Value, ...
+                app.ShowIntegrationCheckBox.Value, ...
+                app.OffsetOverlayCheckBox.Value);
+
+            app.CurrentPlotType = 'raw';
+        end
+        
+        function onPlotCorrected(app)
+            app.PlotCorrectedButton.BackgroundColor = '#baf1ff';
+            drawnow;
+            pause(0.3);
+            app.PlotCorrectedButton.BackgroundColor = [0.94 0.94 0.94];
+        
+            plotChromatograms(app, ...
+                'corrected', ...
+                app.ShowPeaksCheckBox.Value, ...
+                app.ShowIntegrationCheckBox.Value, ...
+                app.OffsetOverlayCheckBox.Value);
+
+            app.CurrentPlotType = 'corrected';
+        end
+
+        function onRefreshChromatogram(app)
+            plotChromatograms(app, ...
+                app.CurrentPlotType, ...
+                app.ShowPeaksCheckBox.Value, ...
+                app.ShowIntegrationCheckBox.Value, ...
+                app.OffsetOverlayCheckBox.Value);
+        end
+
 
         function onImportListBoxChanged(app)
             selected = app.ImportListBox.Value;
