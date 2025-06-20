@@ -128,6 +128,7 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             app.GroupListBox.Items = {};  % Empty initially
             app.GroupListBox.FontSize = 12;
             app.GroupListBox.Tag = 'GroupListBox';
+            app.GroupListBox.ValueChangedFcn = @(src, even) onGroupListBoxChanged(app);
 
             % Create ChromatogramPanel
             app.ChromatogramPanel = uipanel(app.UIFigure);
@@ -162,15 +163,17 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
 
             % Create layout in CurvesPanel
             CurvesLayout = uigridlayout(app.CurvesPanel, [1, 2]);
-            CurvesLayout.ColumnWidth = {'2x', '3x'};  % Adjust as needed
+            CurvesLayout.ColumnWidth = {'1x', '1x'};  % Adjust as needed
             CurvesLayout.RowHeight = {'1x'};
 
             app.IntegratedPeaksTable = uitable(CurvesLayout);
             app.IntegratedPeaksTable.Layout.Row = 1;
             app.IntegratedPeaksTable.Layout.Column = 1;
             app.IntegratedPeaksTable.ColumnName = {'Reaction Name',...
-                'Area', 'X Variable'};
-            app.IntegratedPeaksTable.ColumnEditable = [false false true];
+                'Ret. Time', 'Area', 'X Variable'};
+            app.IntegratedPeaksTable.ColumnWidth = {'fit'};
+            app.IntegratedPeaksTable.Data = {};
+            app.IntegratedPeaksTable.ColumnEditable = [true false false true];
 
             app.IntegratedCurveAxis = uiaxes(CurvesLayout);
             app.IntegratedCurveAxis.Layout.Row = 1;
@@ -249,7 +252,7 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             app.PeakDropdown.Items = {}; % Will be populated dynamically later
             app.PeakDropdown.Placeholder = 'Peaks';
             app.PeakDropdown.Enable = 'off';
-
+            app.PeakDropdown.ValueChangedFcn = @(src, event) onPeakDropdownChanged(app);
 
             % Show the figure after all components are created
             app.UIFigure.Visible = 'on';
@@ -428,23 +431,137 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
                 selectedFiles = {selectedFiles};
             end
         
-            % Assign group name to matching entries
-            for i = 1:numel(app.Data)
-                if any(strcmp(app.Data(i).filename, selectedFiles))
-                    app.Data(i).group = groupName;
+            allLocs = [];
+            allSources = [];
+            peakIndices = [];
+        
+            % Collect all peaks from selected files
+            for i = 1:numel(selectedFiles)
+                fileIdx = find(strcmp({app.Data.filename}, selectedFiles{i}));
+                if isempty(fileIdx), continue; end
+        
+                locs = app.Data(fileIdx).peaks.locs;
+                allLocs = [allLocs; locs(:)];
+                allSources = [allSources; repmat(i, numel(locs), 1)];
+                peakIndices = [peakIndices; repmat(fileIdx, numel(locs), 1)];
+        
+                % Assign group label to the data entry
+                app.Data(fileIdx).group = groupName;
+            end
+        
+            % Cluster peak locations using DBSCAN
+            epsilon = 0.05; % tolerance for retention time drift
+            minPts = 2;
+            if numel(allLocs) >= minPts
+                clusterLabels = dbscan(allLocs, epsilon, minPts);
+            else
+                clusterLabels = -1 * ones(size(allLocs)); % Not enough data
+            end
+        
+            % Assign cluster IDs to original peaks
+            for i = 1:numel(clusterLabels)
+                if clusterLabels(i) == -1, continue; end
+                idx = peakIndices(i);
+                locVal = allLocs(i);
+        
+                % Find match for locVal
+                matchIdx = find(abs(app.Data(idx).peaks.locs - locVal) < 1e-6, 1);
+                if ~isempty(matchIdx)
+                    if ~isfield(app.Data(idx).peaks, 'clusterID')
+                        app.Data(idx).peaks.clusterID = nan(size(app.Data(idx).peaks.locs));
+                    end
+                    app.Data(idx).peaks.clusterID(matchIdx) = clusterLabels(i);
                 end
             end
         
-            % Add to GroupListBox if not already present
+            % Add group to the GroupListBox safely
             existingGroups = app.GroupListBox.Items;
-            if ~any(strcmp(existingGroups, groupName))
-                app.GroupListBox.Items{end+1} = groupName;
+            if isempty(existingGroups)
+                app.GroupListBox.Items = {groupName};
+            elseif ~any(strcmp(existingGroups, groupName))
+                app.GroupListBox.Items = [existingGroups; {groupName}];
             end
+        
+            % Enable dropdown
             app.PeakDropdown.Enable = 'on';
-            % Close the group creation window
+        
+            % Close group creation window
             delete(fig);
         end
 
+        function onGroupListBoxChanged(app)
+            selectedGroup = app.GroupListBox.Value;
+            if isempty(selectedGroup)
+                app.PeakDropdown.Items = {};
+                app.PeakDropdown.Enable = 'off';
+                return;
+            end
+        
+            % Collect clusterIDs from all entries in this group
+            clusterIDs = [];
+            for i = 1:numel(app.Data)
+                if isfield(app.Data(i), "group") && strcmp(app.Data(i).group, selectedGroup)
+                    if isfield(app.Data(i).peaks, "clusterID")
+                        ids = app.Data(i).peaks.clusterID;
+                        clusterIDs = [clusterIDs; ids(:)];
+                    end
+                end
+            end
+        
+            % Filter valid IDs (remove NaN, -1)
+            clusterIDs = unique(clusterIDs(~isnan(clusterIDs) & clusterIDs >= 0));
+        
+            if isempty(clusterIDs)
+                app.PeakDropdown.Items = {};
+                app.PeakDropdown.Enable = 'off';
+            else
+                % Format as "Peak %i"
+                labels = arrayfun(@(id) sprintf("Peak %d", id), clusterIDs);
+                app.PeakDropdown.Items = labels';
+                app.PeakDropdown.Enable = 'on';
+            end
+        end
+
+        function onPeakDropdownChanged(app)
+            selectedGroup = app.GroupListBox.Value;
+            peakLabel = app.PeakDropdown.Value;
+        
+            if isempty(selectedGroup) || isempty(peakLabel)
+                return;
+            end
+        
+            % Extract numeric clusterID
+            tokens = regexp(peakLabel, 'Peak\s+(\d+)', 'tokens');
+            if isempty(tokens), return; end
+            clusterID = str2double(tokens{1}{1});
+        
+            % Initialize table data
+            tableData = {};
+        
+            for i = 1:numel(app.Data)
+                if isfield(app.Data(i), "group") && strcmp(app.Data(i).group, selectedGroup)
+                    if isfield(app.Data(i).peaks, "clusterID") && any(app.Data(i).peaks.clusterID == clusterID)
+                        matchIdx = find(app.Data(i).peaks.clusterID == clusterID);
+                        for m = 1:numel(matchIdx)
+                            % Validate peak index
+                            intPeaks = app.Data(i).integratedPeaks;
+                            if matchIdx(m) <= numel(intPeaks)
+                                % Extract retention time from peak location
+                                retentionTime = app.Data(i).peaks.locs(matchIdx(m));
+                                tableData{end+1, 1} = app.Data(i).filename;                     % Reaction Name
+                                tableData{end,   2} = retentionTime;                           % Ret. Time
+                                tableData{end,   3} = intPeaks(matchIdx(m)).area;             % Area
+                                tableData{end,   4} = 0.0;                                     % X Variable
+
+                            end
+                        end
+                    end
+                end
+            end
+        
+            % Set table
+            app.IntegratedPeaksTable.Data = tableData;
+        end
 
 
         function plotChromatograms(app, dataType, showPeaks, showIntegration, applyOffset)
