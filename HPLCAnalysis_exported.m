@@ -25,6 +25,8 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
         ImportPanel        matlab.ui.container.Panel
         ChromatogramOptions matlab.ui.container.Panel
         CurveOptions       matlab.ui.container.Panel
+        
+        PeakDropdown
         IntegratedPeaksTable
         IntegratedCurveAxis
         ImportListBox      matlab.ui.control.ListBox
@@ -237,6 +239,18 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             app.CurveOptions.Title = "Curve Options";
             app.CurveOptions.Position = [1242 1 198 346];
 
+            % Create layout for CurveOptions panel
+            curveOptionsLayout = uigridlayout(app.CurveOptions);
+            curveOptionsLayout.RowHeight = {'1x'};
+            curveOptionsLayout.ColumnWidth = {'1x'};
+            
+            % Create disabled dropdown for selecting peaks
+            app.PeakDropdown = uidropdown(curveOptionsLayout);
+            app.PeakDropdown.Items = {}; % Will be populated dynamically later
+            app.PeakDropdown.Placeholder = 'Peaks';
+            app.PeakDropdown.Enable = 'off';
+
+
             % Show the figure after all components are created
             app.UIFigure.Visible = 'on';
         end
@@ -426,11 +440,10 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             if ~any(strcmp(existingGroups, groupName))
                 app.GroupListBox.Items{end+1} = groupName;
             end
-        
+            app.PeakDropdown.Enable = 'on';
             % Close the group creation window
             delete(fig);
         end
-
 
 
 
