@@ -183,9 +183,9 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             app.IntegratedCurveAxis = uiaxes(CurvesLayout);
             app.IntegratedCurveAxis.Layout.Row = 1;
             app.IntegratedCurveAxis.Layout.Column = 2;
-            title(app.IntegratedCurveAxis, 'Integrated Curves');
-            xlabel(app.IntegratedCurveAxis, 'Time (min)');
-            ylabel(app.IntegratedCurveAxis, 'AUC');
+            xlabel(app.IntegratedCurveAxis, 'X Variable');
+            ylabel(app.IntegratedCurveAxis, 'Integrated Area');
+            title(app.IntegratedCurveAxis, 'Integrated Curve');
 
             % Create ChromatogramOptions Panel
             app.ChromatogramOptions = uipanel(app.UIFigure);
@@ -272,6 +272,7 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             app.PlotCurveButton.Layout.Row = 1;
             app.PlotCurveButton.Layout.Column = 1;
             app.PlotCurveButton.Text = 'Plot Curve';
+            app.PlotCurveButton.ButtonPushedFcn = @(src, event) onPlotCurve(app);
 
             app.ClearCurvePlotButton = uibutton(CurvePlotOptionsLayout, 'push');
             app.ClearCurvePlotButton.Layout.Row = 1;
@@ -512,6 +513,8 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             minPts = 2;
             if numel(allLocs) >= minPts
                 clusterLabels = dbscan(allLocs, epsilon, minPts);
+            elseif isscalar(allLocs)
+                clusterLabels = 1; % assign single cluster
             else
                 clusterLabels = -1 * ones(size(allLocs)); % Not enough data
             end
@@ -523,7 +526,7 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
                 locVal = allLocs(i);
         
                 % Find match for locVal
-                matchIdx = find(abs(app.Data(idx).peaks.locs - locVal) < 1e-6, 1);
+                matchIdx = find(abs(app.Data(idx).peaks.locs - locVal) < 1e-2, 1);
                 if ~isempty(matchIdx)
                     if ~isfield(app.Data(idx).peaks, 'clusterID')
                         app.Data(idx).peaks.clusterID = nan(size(app.Data(idx).peaks.locs));
@@ -537,7 +540,7 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             if isempty(existingGroups)
                 app.GroupListBox.Items = {groupName};
             elseif ~any(strcmp(existingGroups, groupName))
-                app.GroupListBox.Items = [existingGroups; {groupName}];
+                app.GroupListBox.Items = [existingGroups {groupName}];
             end
         
             % Enable dropdown
@@ -549,13 +552,17 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
 
         function onGroupListBoxChanged(app)
             selectedGroup = app.GroupListBox.Value;
+        
+            % No selection: clear and disable
             if isempty(selectedGroup)
                 app.PeakDropdown.Items = {};
+                app.PeakDropdown.Value = '';
                 app.PeakDropdown.Enable = 'off';
+                app.IntegratedPeaksTable.Data = {};
                 return;
             end
         
-            % Collect clusterIDs from all entries in this group
+            % Collect clusterIDs from selected group
             clusterIDs = [];
             for i = 1:numel(app.Data)
                 if isfield(app.Data(i), "group") && strcmp(app.Data(i).group, selectedGroup)
@@ -566,19 +573,24 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
                 end
             end
         
-            % Filter valid IDs (remove NaN, -1)
+            % Filter valid cluster IDs
             clusterIDs = unique(clusterIDs(~isnan(clusterIDs) & clusterIDs >= 0));
         
             if isempty(clusterIDs)
                 app.PeakDropdown.Items = {};
+                app.PeakDropdown.Value = {};
                 app.PeakDropdown.Enable = 'off';
+                app.IntegratedPeaksTable.Data = {};
             else
-                % Format as "Peak %i"
                 labels = arrayfun(@(id) sprintf("Peak %d", id), clusterIDs);
                 app.PeakDropdown.Items = labels';
                 app.PeakDropdown.Enable = 'on';
+        
+                % Trigger table update
+                onPeakDropdownChanged(app);
             end
         end
+
 
         function onPeakDropdownChanged(app)
             selectedGroup = app.GroupListBox.Value;
@@ -619,6 +631,38 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
         
             % Set table
             app.IntegratedPeaksTable.Data = tableData;
+        end
+
+        function onPlotCurve(app)
+            % Get the table data
+            data = app.IntegratedPeaksTable.Data;
+        
+            % Validate table is not empty
+            if isempty(data)
+                uialert(app.UIFigure, 'No data to plot. Please select a peak group first.', 'Plot Error');
+                return;
+            end
+        
+            % Extract X and Y data
+            x = cell2mat(data(:, 4));  % X Variable
+            y = cell2mat(data(:, 3));  % Area
+        
+            % Validate that X and Y have valid numeric entries
+            if any(isnan(x)) || any(isnan(y))
+                uialert(app.UIFigure, 'X or Y values contain NaNs. Please edit the table to fix this.', 'Data Error');
+                return;
+            end
+        
+            % Plot
+            cla(app.IntegratedCurveAxis);  % Clear previous curve
+            plot(app.IntegratedCurveAxis, x, y, '-o', ...
+                'LineWidth', 2, ...
+                'MarkerSize', 6, ...
+                'DisplayName', 'Integrated Curve');
+            xlabel(app.IntegratedCurveAxis, 'X Variable');
+            ylabel(app.IntegratedCurveAxis, 'Integrated Area');
+            title(app.IntegratedCurveAxis, 'Integrated Curve');
+            grid(app.IntegratedCurveAxis, 'on');
         end
 
 
@@ -702,10 +746,17 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
                         'MarkerSize', 6, 'LineStyle', 'none');
                 end
         
-                % Plot integration regions
+                % Plot integrated regions
                 if showIntegration && isfield(entry, 'integratedPeaks')
                     for j = 1:numel(entry.integratedPeaks)
                         int = entry.integratedPeaks(j);
+                        if int.index_range(1) < 1 || int.index_range(2) > numel(x) || ...
+                           int.index_range(1) > int.index_range(2)
+                            warning('Skipping integration region: invalid index range [%d %d] for signal length %d.', ...
+                                int.index_range(1), int.index_range(2), numel(x));
+                            continue;
+                        end
+
                         xPatch = [x(int.index_range(1):int.index_range(2))];
                         yBase = signal(int.index_range(1):int.index_range(2)); 
                         % if applyOffset
@@ -794,6 +845,7 @@ classdef HPLCAnalysis_exported < matlab.apps.AppBase
             title(app.ChromatogramAxis, 'Chromatogram');
             xlabel(app.ChromatogramAxis, 'Time (min)', 'FontSize', 12);
             ylabel(app.ChromatogramAxis, 'A_{260} (mAU)', 'FontSize', 12);
+            app.CurrentPlotType = 'raw';
         end
 
         function [xOffset, yOffset] = getOverlayOffsetMagnitude(app, allX, allY)
